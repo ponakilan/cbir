@@ -6,7 +6,7 @@ from torchvision import io, transforms
 import torch.nn.functional as F
 from torchvision.models import resnet101, ResNet101_Weights
 
-from utils import multi_scale_image
+from cbir.utils import multi_scale_image
 
 
 class GeM(nn.Module):

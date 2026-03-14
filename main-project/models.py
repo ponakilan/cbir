@@ -43,7 +43,6 @@ if __name__ == "__main__":
 
     sample_image_path = "/home/ubuntu/data/datasets/roxford5k/jpg/oxford_002881.jpg"
     sample_image = io.read_image(sample_image_path).unsqueeze(0).float()
-    print(sample_image.shape)
     features = extractor(sample_image)
 
     print(features.shape)

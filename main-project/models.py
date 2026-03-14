@@ -1,24 +1,24 @@
 import torch
 from torch import nn
+from torchvision import io
 import torch.nn.functional as F
 from torchvision.models import resnet101, ResNet101_Weights
-from torchvision import io
 
 
 class GeM(nn.Module):
 
-    def __init__(self, p=3, eps=1e-6):
+    def __init__(self, p: int = 3, eps: float = 1e-6):
         super(GeM,self).__init__()
         self.p = nn.Parameter(torch.ones(1)*p)
         self.eps = eps
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.gem(x, p=self.p, eps=self.eps)
         
-    def gem(self, x, p=3, eps=1e-6):
+    def gem(self, x, p: int = 3, eps: float = 1e-6) -> torch.Tensor:
         return F.avg_pool2d(x.clamp(min=eps).pow(p), (x.size(-2), x.size(-1))).pow(1./p)
         
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.__class__.__name__ + '(' + 'p=' + '{:.4f}'.format(self.p.data.tolist()[0]) + ', ' + 'eps=' + str(self.eps) + ')'
 
 
@@ -32,7 +32,7 @@ class FeatureExtractor(nn.Module):
 
         self.gem = GeM(p=3)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.resnet_backbone(x)
         x = self.gem(x)
         return x

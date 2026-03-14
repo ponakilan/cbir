@@ -23,7 +23,7 @@ class CbirDataset(Dataset):
             ])
 
     def __len__(self):
-        return len(os.listdir(self.root_dir))
+        return len(self.image_files)
     
     def __getitem__(self, index: int) -> tuple[torch.Tensor, str]:
         filename = self.image_files[index]

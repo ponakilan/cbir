@@ -1,3 +1,5 @@
+import time
+
 import torch
 from torch import nn
 from torchvision import io, transforms
@@ -26,6 +28,9 @@ class QueryFeatureExtractor(nn.Module):
 
         resnet_backbone = resnet101(weights=ResNet101_Weights.DEFAULT)
         self.resnet_backbone = nn.Sequential(*list(resnet_backbone.children())[:-2])
+
+        for p in self.resnet_backbone.parameters():
+            p.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         scaled_images = multi_scale_image(x)
@@ -69,18 +74,18 @@ class DatabaseFeatureExtractor(nn.Module):
         centroids = features[:, :K, :].clone() 
 
         for _ in range(num_iters):
-            distances = torch.cdist(features, centroids) 
-            
-            assignments = torch.argmin(distances, dim=2)
-            
+            distances = torch.cdist(features, centroids)
+            assignments = distances.argmin(dim=2)
+
             new_centroids = torch.zeros_like(centroids)
-            for b in range(B):
-                for k in range(K):
-                    mask = (assignments[b] == k)
-                    if mask.sum() > 0:
-                        new_centroids[b, k] = features[b, mask].mean(dim=0)
-                    else:
-                        new_centroids[b, k] = centroids[b, k]
+
+            for k in range(K):
+                mask = assignments == k
+                masked = features * mask.unsqueeze(-1)
+
+                count = mask.sum(dim=1).clamp(min=1).unsqueeze(-1)
+                new_centroids[:,k] = masked.sum(dim=1) / count
+
             centroids = new_centroids
             
         final_cluster_features = torch.zeros_like(centroids)
@@ -119,6 +124,8 @@ class DatabaseFeatureExtractor(nn.Module):
 
 
 if __name__ == "__main__":
+    start = time.time()
+
     query_extractor = QueryFeatureExtractor(num_features=500)
     db_extractor = DatabaseFeatureExtractor(num_features=500, num_clusters=10)
     gem = GeM(p=3)
@@ -141,3 +148,6 @@ if __name__ == "__main__":
 
     print(f"Global query vector shape: {V_q.shape}")
     print(f"Clustered Database Vector shape: {X_c_K.shape}")
+
+    end = time.time()
+    print(f"Time taken: {end - start}")

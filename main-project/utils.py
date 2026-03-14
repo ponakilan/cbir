@@ -4,7 +4,7 @@ from torchvision import io
 from torch.nn import functional as F
 
 
-def multi_scale_image(image: torch.Tensor) -> tuple[torch.Tensor]:
+def multi_scale_image(image: torch.Tensor) -> list[torch.Tensor]:
     """
     Resize the image into five specific scales.
 

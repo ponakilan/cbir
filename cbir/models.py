@@ -9,16 +9,6 @@ from torchvision.models import resnet101, ResNet101_Weights
 from cbir.utils import multi_scale_image
 
 
-class GeM(nn.Module):
-    def __init__(self, p: int = 3, eps: float = 1e-6):
-        super(GeM,self).__init__()
-        self.p = nn.Parameter(torch.ones(1)*p)
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x.clamp(min=self.eps).pow(self.p).mean(dim=1, keepdim=False).pow(1./self.p)
-
-
 class QueryFeatureExtractor(nn.Module):
 
     def __init__(self, num_features: int = 500):
@@ -50,10 +40,19 @@ class QueryFeatureExtractor(nn.Module):
         selected_features = torch.gather(combined_features, 1, top_indices_expanded)
 
         return selected_features
-    
+
+
+class GeM(nn.Module):
+    def __init__(self, p: int = 3, eps: float = 1e-6):
+        super(GeM,self).__init__()
+        self.p = nn.Parameter(torch.ones(1)*p)
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.clamp(min=self.eps).pow(self.p).mean(dim=1, keepdim=False).pow(1./self.p)
+
 
 class DatabaseFeatureExtractor(nn.Module):
-    
     def __init__(self, num_features: int = 500, num_clusters: int = 10):
         super().__init__()
         self.num_features = num_features
@@ -61,48 +60,36 @@ class DatabaseFeatureExtractor(nn.Module):
 
         resnet_backbone = resnet101(weights=ResNet101_Weights.DEFAULT)
         self.resnet_backbone = nn.Sequential(*list(resnet_backbone.children())[:-2])
-        
         self.gem = GeM(p=3)
 
     def perform_clustering_and_gem(self, features: torch.Tensor, num_iters: int = 10) -> torch.Tensor:
-        """
-        Runs K-means clustering on the features and applies GeM pooling within each cluster.
-        """
+        """Fully vectorized K-Means and GeM pooling (No Python for-loops over batch/clusters)"""
         B, N, D = features.shape
         K = self.num_clusters
         
-        centroids = features[:, :K, :].clone() 
+        # Smart initialization (evenly spaced instead of just the first K)
+        indices = torch.linspace(0, N - 1, steps=K).long()
+        centroids = features[:, indices, :].clone()
 
         for _ in range(num_iters):
             distances = torch.cdist(features, centroids)
             assignments = distances.argmin(dim=2)
-
-            new_centroids = torch.zeros_like(centroids)
-
-            for k in range(K):
-                mask = assignments == k
-                masked = features * mask.unsqueeze(-1)
-
-                count = mask.sum(dim=1).clamp(min=1).unsqueeze(-1)
-                new_centroids[:,k] = masked.sum(dim=1) / count
-
-            centroids = new_centroids
+            mask = F.one_hot(assignments, num_classes=K).float()
             
-        final_cluster_features = torch.zeros_like(centroids)
-        
-        for b in range(B):
-            for k in range(K):
-                mask = (assignments[b] == k)
-                if mask.sum() > 0:
-                    cluster_points = features[b, mask].unsqueeze(0) # [1, num_points, 2048]
-                    
-                    final_cluster_features[b, k] = self.gem(cluster_points).squeeze(0)
-                else:
-                    final_cluster_features[b, k] = centroids[b, k]
-                    
-        return final_cluster_features
+            sum_coords = torch.bmm(mask.transpose(1, 2), features)
+            counts = mask.sum(dim=1).unsqueeze(-1).clamp(min=1)
+            centroids = sum_coords / counts
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        p_val = self.gem.p.view(1, 1, 1)
+        feat_p = features.clamp(min=self.gem.eps).pow(p_val)
+        sum_p = torch.bmm(mask.transpose(1, 2), feat_p)
+        
+        gem_clusters = (sum_p / counts).pow(1.0 / p_val)
+        is_empty = (mask.sum(dim=1) == 0).unsqueeze(-1)
+        
+        return torch.where(is_empty, centroids, gem_clusters)
+
+    def forward(self, x: torch.Tensor) -> tuple:
         scaled_images = multi_scale_image(x)
 
         all_local_features = []
@@ -115,13 +102,20 @@ class DatabaseFeatureExtractor(nn.Module):
         combined_features = torch.cat(all_local_features, dim=1)
         l2_norms = torch.norm(combined_features, p=2, dim=-1)
         N = min(self.num_features, combined_features.shape[1]) 
+        
         _, top_indices = torch.topk(l2_norms, k=N, dim=1)
         top_indices_expanded = top_indices.unsqueeze(-1).expand(-1, -1, combined_features.shape[-1])
         selected_features = torch.gather(combined_features, 1, top_indices_expanded)
+        
         cluster_centers = self.perform_clustering_and_gem(selected_features)
 
-        return cluster_centers
+        # --- NEW MACRO-PRUNING MATH ---
+        clusters_norm = F.normalize(cluster_centers, p=2, dim=-1)
+        centroids = clusters_norm.mean(dim=1) # [B, D]
+        distances = torch.norm(clusters_norm - centroids.unsqueeze(1), p=2, dim=-1)
+        radii = distances.max(dim=1)[0] # [B]
 
+        return cluster_centers, centroids, radii
 
 if __name__ == "__main__":
     start = time.time()
